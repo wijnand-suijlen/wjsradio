@@ -118,18 +118,38 @@ object ScheduleFetcher {
         emptyList()
     }
 
+    // The /api/broadcasts feed only carries the current + upcoming programmes.
+    // The /gids page embeds the full day (00:00–00:00) in its Next.js __NEXT_DATA__,
+    // as programmes with a "HH:MM - HH:MM" time range. NPO ignores date params, so
+    // this is today only.
     private fun fetchNpo(site: String): List<ScheduleItem> {
-        val arr = JSONObject(RssFetcher.httpGet("https://$site/api/broadcasts")).getJSONArray("data")
-        // NPO datetimes are local Dutch time without a zone designator
-        val parse = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
-            .apply { timeZone = TimeZone.getTimeZone("Europe/Amsterdam") }
+        val html = RssFetcher.httpGet("https://$site/gids")
+        val json = Regex(
+            "id=\"__NEXT_DATA__\"[^>]*>(.*?)</script>",
+            RegexOption.DOT_MATCHES_ALL
+        ).find(html)?.groupValues?.get(1) ?: throw IllegalStateException("Gids-data niet gevonden")
+        val programmes = JSONObject(json)
+            .getJSONObject("props").getJSONObject("pageProps").getJSONArray("programmes")
+
+        val midnight = dayStartMillis(0)
         val items = mutableListOf<ScheduleItem>()
-        for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
-            val start = parse.parse(o.getString("startdatetime"))?.time ?: continue
-            val end = parse.parse(o.getString("stopdatetime"))?.time ?: continue
+        var dayCarry = 0L
+        var prevStartMin = -1
+        for (i in 0 until programmes.length()) {
+            val o = programmes.getJSONObject(i)
+            val range = o.optString("fromToTime") // "10:00 - 12:00"
+            val m = Regex("(\\d{1,2}):(\\d{2})\\s*-\\s*(\\d{1,2}):(\\d{2})").find(range) ?: continue
+            val (sh, sm, eh, em) = m.groupValues.drop(1).map { it.toInt() }
+            val startMin = sh * 60 + sm
+            if (startMin < prevStartMin) dayCarry += 24 * 60 // rolled past midnight
+            prevStartMin = startMin
+            var endMin = eh * 60 + em + dayCarry.toInt()
+            val startAbs = startMin + dayCarry.toInt()
+            if (endMin <= startAbs) endMin += 24 * 60 // e.g. 23:00 - 00:00
+            val start = midnight + startAbs * 60_000L
+            val end = midnight + endMin * 60_000L
             val presenters = o.optString("presenters").takeIf { it.isNotEmpty() && it != "null" } ?: ""
-            items.add(ScheduleItem(start, end, timeLabel(start, end), o.getString("title"), presenters))
+            items.add(ScheduleItem(start, end, timeLabel(start, end), o.optString("name"), presenters))
         }
         return items.sortedBy { it.startMillis }
     }
