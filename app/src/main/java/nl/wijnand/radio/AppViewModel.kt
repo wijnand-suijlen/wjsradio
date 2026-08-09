@@ -35,22 +35,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _bookmarks = MutableStateFlow(loadBookmarks())
     val bookmarks: StateFlow<Map<String, String>> = _bookmarks
 
+    // Keyed on "stationId|dayOffset"
     private val _schedules = MutableStateFlow<Map<String, ScheduleState>>(emptyMap())
     val schedules: StateFlow<Map<String, ScheduleState>> = _schedules
 
-    fun loadSchedule(station: Station, force: Boolean = false) {
-        val current = _schedules.value[station.id]
+    fun scheduleKey(station: Station, dayOffset: Int) = "${station.id}|$dayOffset"
+
+    fun loadSchedule(station: Station, dayOffset: Int = 0, force: Boolean = false) {
+        val key = scheduleKey(station, dayOffset)
+        val current = _schedules.value[key]
         if (!force && (current is ScheduleState.Ready || current is ScheduleState.Loading)) return
-        _schedules.update { it + (station.id to ScheduleState.Loading) }
+        _schedules.update { it + (key to ScheduleState.Loading) }
         viewModelScope.launch {
             val state = try {
-                val items = ScheduleFetcher.fetch(station)
+                val items = ScheduleFetcher.fetch(station, dayOffset)
                 if (items.isEmpty()) ScheduleState.Error("Geen programmering gevonden")
                 else ScheduleState.Ready(items)
             } catch (e: Exception) {
                 ScheduleState.Error(e.message ?: "Programmering laden mislukt")
             }
-            _schedules.update { it + (station.id to state) }
+            _schedules.update { it + (key to state) }
         }
     }
 
@@ -93,6 +97,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun removeCustomFeed(podcast: Podcast) {
         _customFeeds.update { feeds -> feeds.filter { it.feedUrl != podcast.feedUrl } }
+        saveCustomFeeds()
+    }
+
+    /** Persist an already-loaded feed (e.g. found via the programme guide) without re-fetching. */
+    fun addCuratedFeed(podcast: Podcast) {
+        if (allPodcasts.any { it.feedUrl == podcast.feedUrl }) return
+        _customFeeds.update { it + podcast.copy(custom = true) }
         saveCustomFeeds()
     }
 

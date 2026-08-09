@@ -55,6 +55,47 @@ object CuratedPodcasts {
     )
 }
 
+data class PodcastCandidate(
+    val title: String,
+    val author: String,
+    val feedUrl: String,
+)
+
+// Finds the podcast belonging to a broadcast programme via the iTunes Search
+// API (keyless). The country store matters: French/German/Belgian podcasts are
+// often missing from the default (US) store.
+object PodcastFinder {
+
+    private val countryCodes = mapOf(
+        "Nederland" to "nl",
+        "België" to "be",
+        "Duitsland" to "de",
+        "Frankrijk" to "fr",
+        "Verenigd Koninkrijk" to "gb",
+    )
+
+    suspend fun search(programmeTitle: String, broadcaster: String, country: String): List<PodcastCandidate> =
+        withContext(Dispatchers.IO) {
+            val cc = countryCodes[country] ?: "nl"
+            query(programmeTitle, cc).ifEmpty { query("$programmeTitle $broadcaster", cc) }
+        }
+
+    private fun query(term: String, countryCode: String): List<PodcastCandidate> {
+        val url = "https://itunes.apple.com/search?media=podcast&limit=8&country=$countryCode" +
+            "&term=" + java.net.URLEncoder.encode(term, "UTF-8")
+        val results = org.json.JSONObject(RssFetcher.httpGet(url)).optJSONArray("results") ?: return emptyList()
+        val candidates = mutableListOf<PodcastCandidate>()
+        for (i in 0 until results.length()) {
+            val o = results.getJSONObject(i)
+            val feed = o.optString("feedUrl")
+            if (feed.startsWith("http")) {
+                candidates.add(PodcastCandidate(o.optString("collectionName"), o.optString("artistName"), feed))
+            }
+        }
+        return candidates
+    }
+}
+
 object RssFetcher {
 
     suspend fun fetchEpisodes(feedUrl: String): Pair<String, List<Episode>> = withContext(Dispatchers.IO) {

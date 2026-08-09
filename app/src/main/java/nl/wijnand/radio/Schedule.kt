@@ -88,15 +88,33 @@ object ScheduleFetcher {
     // The CGU require a credit line when showing Open API data
     fun isRadioFrance(stationId: String): Boolean = stationId in radioFranceIds
 
-    suspend fun fetch(station: Station): List<ScheduleItem> = withContext(Dispatchers.IO) {
+    // NPO's broadcasts API ignores every date parameter and only serves today
+    fun supportsDateBrowsing(stationId: String): Boolean = stationId !in npoSites
+
+    /** Local midnight of today + [dayOffset] days. */
+    fun dayStartMillis(dayOffset: Int): Long {
+        val cal = java.util.Calendar.getInstance().apply {
+            add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        return cal.timeInMillis
+    }
+
+    private fun formatDay(dayOffset: Int, pattern: String): String =
+        SimpleDateFormat(pattern, Locale.US).format(Date(dayStartMillis(dayOffset)))
+
+    suspend fun fetch(station: Station, dayOffset: Int = 0): List<ScheduleItem> = withContext(Dispatchers.IO) {
         npoSites[station.id]?.let { return@withContext fetchNpo(it) }
-        bbcIds[station.id]?.let { return@withContext fetchBbc(it) }
-        spiUrls[station.id]?.let { return@withContext fetchSpi(it) }
-        vrtSlugs[station.id]?.let { return@withContext fetchVrt(it) }
-        rtbfChannels[station.id]?.let { return@withContext fetchRtbf(it) }
-        if (station.id == "bnr") return@withContext fetchBnr()
-        if (station.id == "rtl") return@withContext fetchRtl()
-        radioFranceIds[station.id]?.let { return@withContext fetchRadioFrance(it) }
+        bbcIds[station.id]?.let { return@withContext fetchBbc(it, dayOffset) }
+        spiUrls[station.id]?.let { return@withContext fetchSpi(it, dayOffset) }
+        vrtSlugs[station.id]?.let { return@withContext fetchVrt(it, dayOffset) }
+        rtbfChannels[station.id]?.let { return@withContext fetchRtbf(it, dayOffset) }
+        if (station.id == "bnr") return@withContext fetchBnr(dayOffset)
+        if (station.id == "rtl") return@withContext fetchRtl(dayOffset)
+        radioFranceIds[station.id]?.let { return@withContext fetchRadioFrance(it, dayOffset) }
         emptyList()
     }
 
@@ -116,8 +134,8 @@ object ScheduleFetcher {
         return items.sortedBy { it.startMillis }
     }
 
-    private fun fetchBbc(networkId: String): List<ScheduleItem> {
-        val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+    private fun fetchBbc(networkId: String, dayOffset: Int): List<ScheduleItem> {
+        val day = formatDay(dayOffset, "yyyy-MM-dd")
         val root = JSONObject(
             RssFetcher.httpGet("https://rms.api.bbc.co.uk/v2/experience/inline/schedules/$networkId/$day")
         )
@@ -142,8 +160,8 @@ object ScheduleFetcher {
 
     // Parses a worlddab SPI PI.xml: <programme> with mediumName (16-char cap),
     // optional longName, <time time="ISO" duration="PT..M"/> and shortDescription.
-    private fun fetchSpi(urlTemplate: String): List<ScheduleItem> {
-        val day = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+    private fun fetchSpi(urlTemplate: String, dayOffset: Int): List<ScheduleItem> {
+        val day = formatDay(dayOffset, "yyyyMMdd")
         val xml = RssFetcher.httpGet(urlTemplate.format(day))
 
         val parser = Xml.newPullParser()
@@ -200,10 +218,9 @@ object ScheduleFetcher {
     }
 
     // RTBF uses a broadcast day of 04:00 UTC to 03:59:59 UTC the next day.
-    private fun fetchRtbf(channelId: Int): List<ScheduleItem> {
-        val dayFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-        val today = dayFmt.format(Date())
-        val tomorrow = dayFmt.format(Date(System.currentTimeMillis() + 24 * 3600_000L))
+    private fun fetchRtbf(channelId: Int, dayOffset: Int): List<ScheduleItem> {
+        val today = formatDay(dayOffset, "yyyy-MM-dd")
+        val tomorrow = formatDay(dayOffset + 1, "yyyy-MM-dd")
         val body = RssFetcher.httpGet(
             "https://bff-service.rtbf.be/oaos/v1.6/schedulings" +
                 "?scheduledAfter=${today}T04:00:00.000Z&scheduledBefore=${tomorrow}T03:59:59.999Z" +
@@ -228,8 +245,8 @@ object ScheduleFetcher {
 
     // BNR's own site is Cloudflare-walled; the VPRO programme guide carries the
     // same (Bindinc-licensed) schedule via an open JSON endpoint.
-    private fun fetchBnr(): List<ScheduleItem> {
-        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+    private fun fetchBnr(dayOffset: Int): List<ScheduleItem> {
+        val today = formatDay(dayOffset, "yyyy-MM-dd")
         val body = RssFetcher.httpGet(
             "https://digitale.vprogids.nl/programmagids/api/schedules/$today?channel=bnr-nieuwsradio&fill=true"
         )
@@ -253,8 +270,8 @@ object ScheduleFetcher {
 
     // RTL France has no JSON API; the grille page is server-side rendered HTML
     // with one programme-card per broadcast ("06h00 - 09h15" + title).
-    private fun fetchRtl(): List<ScheduleItem> {
-        val day = SimpleDateFormat("dd-MM-yyyy", Locale.US).format(Date())
+    private fun fetchRtl(dayOffset: Int): List<ScheduleItem> {
+        val day = formatDay(dayOffset, "dd-MM-yyyy")
         val html = RssFetcher.httpGet("https://www.rtl.fr/grille/$day")
         val cardRegex = Regex(
             "<h2 class=\"programme-card__time[^\"]*\"[^>]*>\\s*(\\d{1,2})h(\\d{2})\\s*-\\s*(\\d{1,2})h(\\d{2})\\s*<" +
@@ -262,13 +279,7 @@ object ScheduleFetcher {
             RegexOption.DOT_MATCHES_ALL
         )
         // Times are Europe/Paris local; same UTC offset as the Low Countries year-round
-        val cal = java.util.Calendar.getInstance().apply {
-            set(java.util.Calendar.HOUR_OF_DAY, 0)
-            set(java.util.Calendar.MINUTE, 0)
-            set(java.util.Calendar.SECOND, 0)
-            set(java.util.Calendar.MILLISECOND, 0)
-        }
-        val midnight = cal.timeInMillis
+        val midnight = dayStartMillis(dayOffset)
         val items = mutableListOf<ScheduleItem>()
         for (m in cardRegex.findAll(html)) {
             val (sh, sm, eh, em) = m.groupValues.drop(1).take(4).map { it.toInt() }
@@ -290,8 +301,8 @@ object ScheduleFetcher {
     // VRT MAX guide page via GraphQL: `previous` and `next` tiles carry a start
     // time ("13:00u") and duration ("60 min"); the live tile carries the current
     // programme with remaining minutes ("Nog 123 min").
-    private fun fetchVrt(slug: String): List<ScheduleItem> {
-        val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+    private fun fetchVrt(slug: String, dayOffset: Int): List<ScheduleItem> {
+        val day = formatDay(dayOffset, "yyyy-MM-dd")
         val tiles = "title description indexMeta { value } statusMeta { value }"
         val query = """
             query Epg(${'$'}pageId: ID!) { page(id: ${'$'}pageId) { ... on ElectronicProgramGuidePage {
@@ -334,18 +345,15 @@ object ScheduleFetcher {
             }
         }
         addEdges("previous")
-        page.optJSONObject("current")?.optJSONObject("tile")?.let { t -> parseTile(t, live = true)?.let(raw::add) }
+        // The live tile is only meaningful when looking at today
+        if (dayOffset == 0) {
+            page.optJSONObject("current")?.optJSONObject("tile")?.let { t -> parseTile(t, live = true)?.let(raw::add) }
+        }
         addEdges("next")
 
         // Convert minutes-of-day to epoch millis; a start earlier than its
         // predecessor means the guide rolled past midnight.
-        val cal = java.util.Calendar.getInstance().apply {
-            set(java.util.Calendar.HOUR_OF_DAY, 0)
-            set(java.util.Calendar.MINUTE, 0)
-            set(java.util.Calendar.SECOND, 0)
-            set(java.util.Calendar.MILLISECOND, 0)
-        }
-        val midnight = cal.timeInMillis
+        val midnight = dayStartMillis(dayOffset)
         val items = mutableListOf<ScheduleItem>()
         var dayOffset = 0L
         var prevStartMin = -1
@@ -366,15 +374,9 @@ object ScheduleFetcher {
         return items.sortedBy { it.startMillis }
     }
 
-    private fun fetchRadioFrance(stationEnum: String): List<ScheduleItem> {
-        val cal = java.util.Calendar.getInstance().apply {
-            set(java.util.Calendar.HOUR_OF_DAY, 0)
-            set(java.util.Calendar.MINUTE, 0)
-            set(java.util.Calendar.SECOND, 0)
-            set(java.util.Calendar.MILLISECOND, 0)
-        }
-        val dayStart = cal.timeInMillis / 1000
-        val dayEnd = dayStart + 24 * 3600
+    private fun fetchRadioFrance(stationEnum: String, dayOffset: Int): List<ScheduleItem> {
+        val dayStart = dayStartMillis(dayOffset) / 1000
+        val dayEnd = dayStartMillis(dayOffset + 1) / 1000
         val query = """
             { grid(start: $dayStart, end: $dayEnd, station: $stationEnum) {
                 ... on DiffusionStep { start end diffusion { title show { title } } }

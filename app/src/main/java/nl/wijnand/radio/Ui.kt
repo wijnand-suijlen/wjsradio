@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GraphicEq
@@ -81,6 +83,9 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 // ---------- playback helpers ----------
 
@@ -178,6 +183,8 @@ fun rememberPlayerState(controller: MediaController?): PlayerUiState {
 fun RadioApp(controller: MediaController?, icyTitle: String = "", vm: AppViewModel = viewModel()) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var scheduleStationId by rememberSaveable { mutableStateOf<String?>(null) }
+    var guidePodcast by remember { mutableStateOf<Podcast?>(null) }
+    var guideQuery by remember { mutableStateOf("") }
     val player = rememberPlayerState(controller)
     val context = LocalContext.current
 
@@ -218,11 +225,32 @@ fun RadioApp(controller: MediaController?, icyTitle: String = "", vm: AppViewMod
             when (tab) {
                 0 -> {
                     val scheduleStation = scheduleStationId?.let { Stations.byId(it) }
-                    if (scheduleStation == null) {
-                        StationsTab(controller, player, onOpenSchedule = { scheduleStationId = it.id })
-                    } else {
-                        BackHandler { scheduleStationId = null }
-                        ScheduleScreen(vm, scheduleStation, onBack = { scheduleStationId = null })
+                    val podcast = guidePodcast
+                    when {
+                        scheduleStation == null ->
+                            StationsTab(controller, player, onOpenSchedule = { scheduleStationId = it.id })
+
+                        podcast != null -> {
+                            BackHandler { guidePodcast = null }
+                            EpisodeList(
+                                controller, vm, podcast, player,
+                                onBack = { guidePodcast = null },
+                                initialQuery = guideQuery,
+                                showSaveFeed = true,
+                            )
+                        }
+
+                        else -> {
+                            BackHandler { scheduleStationId = null }
+                            ScheduleScreen(
+                                vm, scheduleStation,
+                                onBack = { scheduleStationId = null },
+                                onOpenPodcast = { p, query ->
+                                    guidePodcast = p
+                                    guideQuery = query
+                                },
+                            )
+                        }
                     }
                 }
                 1 -> PodcastsTab(controller, vm, player)
@@ -293,13 +321,29 @@ fun StationsTab(
     }
 }
 
-@Composable
-private fun ScheduleScreen(vm: AppViewModel, station: Station, onBack: () -> Unit) {
-    val schedules by vm.schedules.collectAsState()
-    val state = schedules[station.id]
-    val listState = rememberLazyListState()
+private fun dayLabel(dayOffset: Int): String = when (dayOffset) {
+    -1 -> "gisteren"
+    0 -> "vandaag"
+    1 -> "morgen"
+    else -> SimpleDateFormat("EEE d MMM", Locale("nl"))
+        .format(Date(ScheduleFetcher.dayStartMillis(dayOffset)))
+}
 
-    LaunchedEffect(station.id) { vm.loadSchedule(station) }
+@Composable
+private fun ScheduleScreen(
+    vm: AppViewModel,
+    station: Station,
+    onBack: () -> Unit,
+    onOpenPodcast: (Podcast, String) -> Unit,
+) {
+    val schedules by vm.schedules.collectAsState()
+    var dayOffset by rememberSaveable { mutableIntStateOf(0) }
+    val browsable = ScheduleFetcher.supportsDateBrowsing(station.id)
+    val state = schedules[vm.scheduleKey(station, dayOffset)]
+    val listState = rememberLazyListState()
+    var searchItem by remember { mutableStateOf<ScheduleItem?>(null) }
+
+    LaunchedEffect(station.id, dayOffset) { vm.loadSchedule(station, dayOffset) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -312,14 +356,35 @@ private fun ScheduleScreen(vm: AppViewModel, station: Station, onBack: () -> Uni
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Terug")
             }
             Text(
-                "Vandaag op ${station.name}",
+                if (browsable) station.name else "Vandaag op ${station.name}",
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
-            IconButton(onClick = { vm.loadSchedule(station, force = true) }) {
+            IconButton(onClick = { vm.loadSchedule(station, dayOffset, force = true) }) {
                 Icon(Icons.Default.Refresh, contentDescription = "Vernieuwen")
+            }
+        }
+        if (browsable) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                IconButton(enabled = dayOffset > -30, onClick = { dayOffset-- }) {
+                    Icon(Icons.Default.ChevronLeft, contentDescription = "Vorige dag")
+                }
+                Text(
+                    dayLabel(dayOffset),
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier
+                        .clickable { dayOffset = 0 }
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+                IconButton(enabled = dayOffset < 30, onClick = { dayOffset++ }) {
+                    Icon(Icons.Default.ChevronRight, contentDescription = "Volgende dag")
+                }
             }
         }
         HorizontalDivider()
@@ -338,17 +403,20 @@ private fun ScheduleScreen(vm: AppViewModel, station: Station, onBack: () -> Uni
                 verticalArrangement = Arrangement.Center
             ) {
                 Text(state.message, color = MaterialTheme.colorScheme.error)
-                TextButton(onClick = { vm.loadSchedule(station, force = true) }) {
+                TextButton(onClick = { vm.loadSchedule(station, dayOffset, force = true) }) {
                     Text("Opnieuw proberen")
                 }
             }
 
             is ScheduleState.Ready -> {
                 val now = System.currentTimeMillis()
-                val currentIndex = state.items.indexOfFirst { now >= it.startMillis && now < it.endMillis }
+                val currentIndex = if (dayOffset == 0)
+                    state.items.indexOfFirst { now >= it.startMillis && now < it.endMillis }
+                else -1
 
                 LaunchedEffect(state) {
                     if (currentIndex > 0) listState.scrollToItem(currentIndex)
+                    else listState.scrollToItem(0)
                 }
 
                 LazyColumn(Modifier.fillMaxSize(), state = listState) {
@@ -357,7 +425,8 @@ private fun ScheduleScreen(vm: AppViewModel, station: Station, onBack: () -> Uni
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                                .clickable { searchItem = item }
+                                .padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
@@ -392,6 +461,14 @@ private fun ScheduleScreen(vm: AppViewModel, station: Station, onBack: () -> Uni
                                     color = MaterialTheme.colorScheme.primary
                                 )
                             }
+                            Icon(
+                                Icons.Default.Podcasts,
+                                contentDescription = "Podcast zoeken",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .padding(horizontal = 12.dp)
+                                    .size(18.dp)
+                            )
                         }
                         HorizontalDivider(Modifier.padding(horizontal = 16.dp))
                     }
@@ -409,6 +486,82 @@ private fun ScheduleScreen(vm: AppViewModel, station: Station, onBack: () -> Uni
             }
         }
     }
+
+    searchItem?.let { item ->
+        // The episode of a broadcast carries the broadcast's date; prefill the
+        // episode-list search with it in the same Dutch format the list uses.
+        val dateQuery = SimpleDateFormat("d MMM yyyy", Locale("nl"))
+            .format(Date(item.startMillis))
+        PodcastSearchDialog(
+            programmeTitle = item.title,
+            broadcaster = station.broadcaster,
+            country = station.country,
+            onDismiss = { searchItem = null },
+            onOpen = { candidate ->
+                searchItem = null
+                onOpenPodcast(
+                    Podcast(candidate.author.ifEmpty { station.broadcaster }, candidate.title, candidate.feedUrl, custom = true),
+                    dateQuery,
+                )
+            },
+        )
+    }
+}
+
+@Composable
+private fun PodcastSearchDialog(
+    programmeTitle: String,
+    broadcaster: String,
+    country: String,
+    onDismiss: () -> Unit,
+    onOpen: (PodcastCandidate) -> Unit,
+) {
+    var busy by remember { mutableStateOf(true) }
+    var results by remember { mutableStateOf<List<PodcastCandidate>>(emptyList()) }
+
+    LaunchedEffect(programmeTitle) {
+        results = try {
+            PodcastFinder.search(programmeTitle, broadcaster, country)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        busy = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Podcast van \"$programmeTitle\"") },
+        text = {
+            when {
+                busy -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+                results.isEmpty() -> Text("Geen podcast gevonden voor deze uitzending.")
+                else -> LazyColumn {
+                    items(results, key = { it.feedUrl }) { candidate ->
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onOpen(candidate) }
+                                .padding(vertical = 10.dp)
+                        ) {
+                            Text(candidate.title, style = MaterialTheme.typography.bodyLarge)
+                            if (candidate.author.isNotEmpty()) {
+                                Text(
+                                    candidate.author,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        HorizontalDivider()
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Sluiten") } }
+    )
 }
 
 @Composable
@@ -548,13 +701,18 @@ private fun EpisodeList(
     podcast: Podcast,
     player: PlayerUiState,
     onBack: () -> Unit,
+    initialQuery: String = "",
+    showSaveFeed: Boolean = false,
 ) {
     val episodesMap by vm.episodes.collectAsState()
     val bookmarks by vm.bookmarks.collectAsState()
+    val customFeeds by vm.customFeeds.collectAsState()
     val state = episodesMap[podcast.feedUrl]
     val bookmarkUrl = bookmarks[podcast.feedUrl]
+    val context = LocalContext.current
+    val alreadySaved = customFeeds.any { it.feedUrl == podcast.feedUrl }
 
-    var query by rememberSaveable { mutableStateOf("") }
+    var query by rememberSaveable(podcast.feedUrl) { mutableStateOf(initialQuery) }
     var newestFirst by rememberSaveable { mutableStateOf(true) }
     var expandedIds by remember { mutableStateOf(setOf<String>()) }
     val listState = rememberLazyListState()
@@ -611,6 +769,14 @@ private fun EpisodeList(
                     if (newestFirst) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward,
                     contentDescription = if (newestFirst) "Nieuwste eerst" else "Oudste eerst"
                 )
+            }
+            if (showSaveFeed && !alreadySaved) {
+                IconButton(onClick = {
+                    vm.addCuratedFeed(podcast)
+                    Toast.makeText(context, "Podcast bewaard", Toast.LENGTH_SHORT).show()
+                }) {
+                    Icon(Icons.Default.Add, contentDescription = "Feed bewaren")
+                }
             }
             IconButton(onClick = { vm.loadEpisodes(podcast, force = true) }) {
                 Icon(Icons.Default.Refresh, contentDescription = "Vernieuwen")
