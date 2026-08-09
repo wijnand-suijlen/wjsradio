@@ -77,7 +77,10 @@ object PodcastFinder {
     suspend fun search(programmeTitle: String, broadcaster: String, country: String): List<PodcastCandidate> =
         withContext(Dispatchers.IO) {
             val cc = countryCodes[country] ?: "nl"
+            // iTunes can list the same feed under several collections; the feedUrl
+            // is the podcast list's key, so it must be unique.
             query(programmeTitle, cc).ifEmpty { query("$programmeTitle $broadcaster", cc) }
+                .distinctBy { it.feedUrl }
         }
 
     private fun query(term: String, countryCode: String): List<PodcastCandidate> {
