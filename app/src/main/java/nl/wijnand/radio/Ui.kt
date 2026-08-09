@@ -530,31 +530,43 @@ private fun PodcastSearchDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Podcast van \"$programmeTitle\"") },
+        // Framed as a search, not a definitive link: unlike the broadcasters'
+        // own apps this is a best-effort match in an external catalogue.
+        title = { Text("Zoekresultaten") },
         text = {
             when {
                 busy -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-                results.isEmpty() -> Text("Geen podcast gevonden voor deze uitzending.")
-                else -> LazyColumn {
-                    items(results, key = { it.feedUrl }) { candidate ->
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable { onOpen(candidate) }
-                                .padding(vertical = 10.dp)
-                        ) {
-                            Text(candidate.title, style = MaterialTheme.typography.bodyLarge)
-                            if (candidate.author.isNotEmpty()) {
-                                Text(
-                                    candidate.author,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                results.isEmpty() -> Text(
+                    "Geen zoekresultaten voor \"$programmeTitle\". Zoek eventueel zelf in de Podcasts-tab."
+                )
+                else -> Column {
+                    Text(
+                        "Beste matches uit Apple Podcasts — kies de juiste.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    LazyColumn {
+                        items(results, key = { it.feedUrl }) { candidate ->
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onOpen(candidate) }
+                                    .padding(vertical = 10.dp)
+                            ) {
+                                Text(candidate.title, style = MaterialTheme.typography.bodyLarge)
+                                if (candidate.author.isNotEmpty()) {
+                                    Text(
+                                        candidate.author,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
+                            HorizontalDivider()
                         }
-                        HorizontalDivider()
                     }
                 }
             }
