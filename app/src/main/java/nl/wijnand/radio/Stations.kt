@@ -39,6 +39,7 @@ object Stations {
         Station("fmusique", "France Musique", "Radio France", "Frankrijk", "https://icecast.radiofrance.fr/francemusique-midfi.mp3"),
         Station("finfo", "franceinfo", "Radio France", "Frankrijk", "https://icecast.radiofrance.fr/franceinfo-midfi.mp3"),
         Station("fip", "FIP", "Radio France", "Frankrijk", "https://icecast.radiofrance.fr/fip-midfi.mp3"),
+        Station("fbidf", "France Bleu Paris", "Radio France", "Frankrijk", "https://icecast.radiofrance.fr/fb1071-midfi.mp3"),
         Station("rtl", "RTL", "RTL France", "Frankrijk", "https://icecast.rtl.fr/rtl-1-44-128"),
 
         // Verenigd Koninkrijk — stabiele BBC master-playlists (de pool_NNN-URL's van
