@@ -32,6 +32,10 @@ All code lives in `app/src/main/java/nl/wijnand/radio/` (package `nl.wijnand.rad
 
 UI language is Dutch — keep new user-facing strings in Dutch.
 
+## Radio France API constraints
+
+`NOTITIES-radiofrance-cgu.md` summarizes the Radio France Open API terms. When extending the app, respect the hard limits: max 1000 API requests/day (cache the schedule, never poll), no downloading/caching/rehosting of Radio France audio (streaming via their URLs only), no modification of their programme data, and the API key (in `local.properties` as `radiofrance.api.key`, read into `BuildConfig.RADIOFRANCE_API_KEY`) must never be committed or shipped in an APK that gets shared — build a keyless variant for that. The credit line "données fournies par l'Open API Radio France" in the French stations' schedule screen is contractually required; don't remove it.
+
 ## Stream/feed maintenance
 
 Broadcasters occasionally move stream URLs. Verify a candidate with:
