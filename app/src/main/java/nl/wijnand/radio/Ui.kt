@@ -1,5 +1,7 @@
 package nl.wijnand.radio
 
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateContentSize
@@ -36,6 +38,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Podcasts
@@ -185,6 +188,7 @@ fun RadioApp(controller: MediaController?, icyTitle: String = "", vm: AppViewMod
     var scheduleStationId by rememberSaveable { mutableStateOf<String?>(null) }
     var guidePodcast by remember { mutableStateOf<Podcast?>(null) }
     var guideQuery by remember { mutableStateOf("") }
+    var showAbout by remember { mutableStateOf(false) }
     val player = rememberPlayerState(controller)
     val context = LocalContext.current
 
@@ -201,18 +205,23 @@ fun RadioApp(controller: MediaController?, icyTitle: String = "", vm: AppViewMod
         contentWindowInsets = if (player.mediaId != null) sideInsets
         else sideInsets.union(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)),
         topBar = {
-            TabRow(
-                selectedTabIndex = tab,
+            Row(
                 modifier = Modifier.windowInsetsPadding(
                     WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top)
-                )
+                ),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Tab(selected = tab == 0, onClick = { tab = 0 },
-                    text = { Text("Radio") },
-                    icon = { Icon(Icons.Default.Radio, null) })
-                Tab(selected = tab == 1, onClick = { tab = 1 },
-                    text = { Text("Podcasts") },
-                    icon = { Icon(Icons.Default.Podcasts, null) })
+                TabRow(selectedTabIndex = tab, modifier = Modifier.weight(1f)) {
+                    Tab(selected = tab == 0, onClick = { tab = 0 },
+                        text = { Text("Radio") },
+                        icon = { Icon(Icons.Default.Radio, null) })
+                    Tab(selected = tab == 1, onClick = { tab = 1 },
+                        text = { Text("Podcasts") },
+                        icon = { Icon(Icons.Default.Podcasts, null) })
+                }
+                IconButton(onClick = { showAbout = true }) {
+                    Icon(Icons.Outlined.Info, contentDescription = "Over deze app")
+                }
             }
         },
         bottomBar = {
@@ -257,6 +266,43 @@ fun RadioApp(controller: MediaController?, icyTitle: String = "", vm: AppViewMod
             }
         }
     }
+
+    if (showAbout) {
+        AboutDialog(onDismiss = { showAbout = false })
+    }
+}
+
+@Composable
+private fun AboutDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val repoUrl = "https://github.com/wijnand-suijlen/wjsradio"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Radio") },
+        text = {
+            Column {
+                Text("Versie ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Een op maat gemaakte radio- en podcast-app.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                )
+                Text(
+                    repoUrl,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(repoUrl)))
+                        } catch (_: Exception) {
+                        }
+                    }
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Sluiten") } }
+    )
 }
 
 // ---------- stations ----------
