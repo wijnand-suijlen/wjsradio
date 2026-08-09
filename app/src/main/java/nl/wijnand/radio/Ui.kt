@@ -9,14 +9,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -185,13 +187,19 @@ fun RadioApp(controller: MediaController?, icyTitle: String = "", vm: AppViewMod
         }
     }
 
+    // Sides must always clear the navigation bar / camera cutout (landscape);
+    // the bottom only when the player bar isn't there to do it.
+    val sideInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)
     Scaffold(
-        // Without the player bar the lists must clear the system navigation bar
-        // themselves; with it, the bar (navigationBarsPadding) already does.
-        contentWindowInsets = if (player.mediaId != null) WindowInsets(0, 0, 0, 0)
-        else WindowInsets.navigationBars,
+        contentWindowInsets = if (player.mediaId != null) sideInsets
+        else sideInsets.union(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)),
         topBar = {
-            TabRow(selectedTabIndex = tab, modifier = Modifier.statusBarsPadding()) {
+            TabRow(
+                selectedTabIndex = tab,
+                modifier = Modifier.windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top)
+                )
+            ) {
                 Tab(selected = tab == 0, onClick = { tab = 0 },
                     text = { Text("Radio") },
                     icon = { Icon(Icons.Default.Radio, null) })
@@ -756,7 +764,12 @@ private fun formatMs(ms: Long): String {
 
 @Composable
 fun PlayerBar(controller: MediaController?, player: PlayerUiState, icyTitle: String = "") {
-    Surface(tonalElevation = 8.dp, modifier = Modifier.navigationBarsPadding()) {
+    Surface(
+        tonalElevation = 8.dp,
+        modifier = Modifier.windowInsetsPadding(
+            WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+        )
+    ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
