@@ -21,8 +21,9 @@ data class ScheduleItem(
 )
 
 // Today's programme guide. NPO and BBC expose keyless JSON APIs, the German
-// broadcasters publish RadioDNS/SPI XML, Radio France needs an API key.
-// VRT/RTBF have no usable source (VRT's RadioDNS schedules are empty).
+// broadcasters publish RadioDNS/SPI XML, VRT MAX and RTBF have open internal
+// JSON APIs, BNR comes via the VPRO gids, RTL France via its grille HTML,
+// and Radio France needs an API key.
 object ScheduleFetcher {
 
     private val npoSites = mapOf(
@@ -59,6 +60,13 @@ object ScheduleFetcher {
         "klara" to "klara",
     )
 
+    // RTBF's open scheduling API behind www.rtbf.be/grille-des-programmes;
+    // channel ids: La Première = 6, Musiq3 = 7.
+    private val rtbfChannels = mapOf(
+        "rtbf1" to 6,
+        "musiq3" to 7,
+    )
+
     // Radio France needs a personal API key in local.properties (radiofrance.api.key=...);
     // without one these stations simply don't offer a schedule.
     private val radioFranceIds = mapOf(
@@ -73,7 +81,8 @@ object ScheduleFetcher {
 
     fun supports(stationId: String): Boolean =
         stationId in npoSites || stationId in bbcIds || stationId in spiUrls ||
-            stationId in vrtSlugs ||
+            stationId in vrtSlugs || stationId in rtbfChannels ||
+            stationId == "bnr" || stationId == "rtl" ||
             (stationId in radioFranceIds && radioFranceKey.isNotEmpty())
 
     // The CGU require a credit line when showing Open API data
@@ -84,6 +93,9 @@ object ScheduleFetcher {
         bbcIds[station.id]?.let { return@withContext fetchBbc(it) }
         spiUrls[station.id]?.let { return@withContext fetchSpi(it) }
         vrtSlugs[station.id]?.let { return@withContext fetchVrt(it) }
+        rtbfChannels[station.id]?.let { return@withContext fetchRtbf(it) }
+        if (station.id == "bnr") return@withContext fetchBnr()
+        if (station.id == "rtl") return@withContext fetchRtl()
         radioFranceIds[station.id]?.let { return@withContext fetchRadioFrance(it) }
         emptyList()
     }
@@ -186,6 +198,94 @@ object ScheduleFetcher {
         }
         return items.sortedBy { it.startMillis }
     }
+
+    // RTBF uses a broadcast day of 04:00 UTC to 03:59:59 UTC the next day.
+    private fun fetchRtbf(channelId: Int): List<ScheduleItem> {
+        val dayFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val today = dayFmt.format(Date())
+        val tomorrow = dayFmt.format(Date(System.currentTimeMillis() + 24 * 3600_000L))
+        val body = RssFetcher.httpGet(
+            "https://bff-service.rtbf.be/oaos/v1.6/schedulings" +
+                "?scheduledAfter=${today}T04:00:00.000Z&scheduledBefore=${tomorrow}T03:59:59.999Z" +
+                "&channelIds=$channelId&_limit=500&platform=WEB"
+        )
+        val arr = JSONObject(body).getJSONArray("data")
+        val items = mutableListOf<ScheduleItem>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val start = try {
+                OffsetDateTime.parse(o.getString("scheduledAt")).toInstant().toEpochMilli()
+            } catch (_: Exception) {
+                continue
+            }
+            val end = start + o.optLong("duration", 3600) * 1000
+            val subtitle = o.optString("subtitle").takeIf { it.isNotEmpty() && it != "null" }
+                ?: o.optString("description").takeIf { it != "null" }?.take(200) ?: ""
+            items.add(ScheduleItem(start, end, timeLabel(start, end), o.optString("title"), subtitle))
+        }
+        return items.sortedBy { it.startMillis }
+    }
+
+    // BNR's own site is Cloudflare-walled; the VPRO programme guide carries the
+    // same (Bindinc-licensed) schedule via an open JSON endpoint.
+    private fun fetchBnr(): List<ScheduleItem> {
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        val body = RssFetcher.httpGet(
+            "https://digitale.vprogids.nl/programmagids/api/schedules/$today?channel=bnr-nieuwsradio&fill=true"
+        )
+        val parse = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+            .apply { timeZone = TimeZone.getTimeZone("Europe/Amsterdam") }
+        val days = JSONObject(body).getJSONArray("data")
+        val items = mutableListOf<ScheduleItem>()
+        for (d in 0 until days.length()) {
+            val dayItems = days.getJSONObject(d).optJSONArray("items") ?: continue
+            for (i in 0 until dayItems.length()) {
+                val o = dayItems.getJSONObject(i)
+                val start = parse.parse(o.getString("startDateTime"))?.time ?: continue
+                val end = start + o.optLong("durationMinutes", 60) * 60_000
+                val subtitle = o.optString("shortDescription").takeIf { it.isNotEmpty() && it != "null" }
+                    ?: o.optString("description").takeIf { it != "null" }?.take(200) ?: ""
+                items.add(ScheduleItem(start, end, timeLabel(start, end), o.optString("title"), subtitle))
+            }
+        }
+        return items.sortedBy { it.startMillis }
+    }
+
+    // RTL France has no JSON API; the grille page is server-side rendered HTML
+    // with one programme-card per broadcast ("06h00 - 09h15" + title).
+    private fun fetchRtl(): List<ScheduleItem> {
+        val day = SimpleDateFormat("dd-MM-yyyy", Locale.US).format(Date())
+        val html = RssFetcher.httpGet("https://www.rtl.fr/grille/$day")
+        val cardRegex = Regex(
+            "<h2 class=\"programme-card__time[^\"]*\"[^>]*>\\s*(\\d{1,2})h(\\d{2})\\s*-\\s*(\\d{1,2})h(\\d{2})\\s*<" +
+                ".*?programme-card__title[^\"]*\"[^>]*>([^<]+)<",
+            RegexOption.DOT_MATCHES_ALL
+        )
+        // Times are Europe/Paris local; same UTC offset as the Low Countries year-round
+        val cal = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val midnight = cal.timeInMillis
+        val items = mutableListOf<ScheduleItem>()
+        for (m in cardRegex.findAll(html)) {
+            val (sh, sm, eh, em) = m.groupValues.drop(1).take(4).map { it.toInt() }
+            val startMin = sh * 60 + sm
+            var endMin = eh * 60 + em
+            if (endMin <= startMin) endMin += 24 * 60
+            val start = midnight + startMin * 60_000L
+            val end = midnight + endMin * 60_000L
+            items.add(ScheduleItem(start, end, timeLabel(start, end), decodeEntities(m.groupValues[5].trim()), ""))
+        }
+        return items.sortedBy { it.startMillis }
+    }
+
+    private fun decodeEntities(s: String): String = s
+        .replace(Regex("&#(\\d+);")) { it.groupValues[1].toInt().toChar().toString() }
+        .replace("&amp;", "&").replace("&quot;", "\"").replace("&apos;", "'")
+        .replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ")
 
     // VRT MAX guide page via GraphQL: `previous` and `next` tiles carry a start
     // time ("13:00u") and duration ("60 min"); the live tile carries the current
