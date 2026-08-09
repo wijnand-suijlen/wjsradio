@@ -50,6 +50,15 @@ object ScheduleFetcher {
         "dlfkultur" to "https://rdns.deutschlandradio.de/radiodns/spi/3.1/dab/de0/10bc/d220/0/%s_PI.xml",
     )
 
+    // VRT MAX programme-guide pages, fetched via their GraphQL API. This endpoint
+    // accepts anonymous requests with just the client headers (verified 2026-08),
+    // but it is an undocumented internal API and may break without warning.
+    // Klara Continuo has no guide page (non-stop music).
+    private val vrtSlugs = mapOf(
+        "vrt1" to "radio1",
+        "klara" to "klara",
+    )
+
     // Radio France needs a personal API key in local.properties (radiofrance.api.key=...);
     // without one these stations simply don't offer a schedule.
     private val radioFranceIds = mapOf(
@@ -64,6 +73,7 @@ object ScheduleFetcher {
 
     fun supports(stationId: String): Boolean =
         stationId in npoSites || stationId in bbcIds || stationId in spiUrls ||
+            stationId in vrtSlugs ||
             (stationId in radioFranceIds && radioFranceKey.isNotEmpty())
 
     // The CGU require a credit line when showing Open API data
@@ -73,6 +83,7 @@ object ScheduleFetcher {
         npoSites[station.id]?.let { return@withContext fetchNpo(it) }
         bbcIds[station.id]?.let { return@withContext fetchBbc(it) }
         spiUrls[station.id]?.let { return@withContext fetchSpi(it) }
+        vrtSlugs[station.id]?.let { return@withContext fetchVrt(it) }
         radioFranceIds[station.id]?.let { return@withContext fetchRadioFrance(it) }
         emptyList()
     }
@@ -176,6 +187,85 @@ object ScheduleFetcher {
         return items.sortedBy { it.startMillis }
     }
 
+    // VRT MAX guide page via GraphQL: `previous` and `next` tiles carry a start
+    // time ("13:00u") and duration ("60 min"); the live tile carries the current
+    // programme with remaining minutes ("Nog 123 min").
+    private fun fetchVrt(slug: String): List<ScheduleItem> {
+        val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        val tiles = "title description indexMeta { value } statusMeta { value }"
+        val query = """
+            query Epg(${'$'}pageId: ID!) { page(id: ${'$'}pageId) { ... on ElectronicProgramGuidePage {
+                current { ... on ElectronicProgramGuidePageLiveTile { tile { ... on AudioLivestreamTile { $tiles } } } }
+                previous { paginatedItems(first: 100) { edges { node { ... on RadioEpisodeTile { $tiles } } } } }
+                next { paginatedItems(first: 100) { edges { node { ... on RadioEpisodeTile { $tiles } } } } }
+            } } }
+        """.trimIndent()
+        val body = httpPostJson(
+            "https://www.vrt.be/vrtnu-api/graphql/v1",
+            JSONObject()
+                .put("query", query)
+                .put("variables", JSONObject().put("pageId", "/vrtmax/tv-gids/$slug/$day/"))
+                .toString(),
+            mapOf("x-vrt-client-name" to "WEB", "x-vrt-client-version" to "1.5.15"),
+        )
+        val page = JSONObject(body).getJSONObject("data").optJSONObject("page")
+            ?: throw IllegalStateException("Geen gidspagina gevonden")
+
+        // (title, description, startMinutesOfDay, durationMinutes or -1 for the live tile)
+        data class Raw(val title: String, val desc: String, val startMin: Int, val durMin: Int, val live: Boolean)
+
+        fun parseTile(o: JSONObject, live: Boolean): Raw? {
+            val title = o.optString("title").takeIf { it.isNotEmpty() } ?: return null
+            val startText = o.optJSONArray("indexMeta")?.optJSONObject(0)?.optString("value") ?: return null
+            val m = Regex("(\\d{1,2}):(\\d{2})").find(startText) ?: return null
+            val dur = o.optJSONArray("statusMeta")?.optJSONObject(0)?.optString("value")
+                ?.let { Regex("(\\d+)\\s*min").find(it)?.groupValues?.get(1)?.toIntOrNull() } ?: -1
+            return Raw(
+                title, o.optString("description").takeIf { it != "null" } ?: "",
+                m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt(), dur, live
+            )
+        }
+
+        val raw = mutableListOf<Raw>()
+        fun addEdges(section: String) {
+            val edges = page.optJSONObject(section)?.optJSONObject("paginatedItems")?.optJSONArray("edges")
+            for (i in 0 until (edges?.length() ?: 0)) {
+                edges!!.optJSONObject(i)?.optJSONObject("node")?.let { n -> parseTile(n, live = false)?.let(raw::add) }
+            }
+        }
+        addEdges("previous")
+        page.optJSONObject("current")?.optJSONObject("tile")?.let { t -> parseTile(t, live = true)?.let(raw::add) }
+        addEdges("next")
+
+        // Convert minutes-of-day to epoch millis; a start earlier than its
+        // predecessor means the guide rolled past midnight.
+        val cal = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val midnight = cal.timeInMillis
+        val items = mutableListOf<ScheduleItem>()
+        var dayOffset = 0L
+        var prevStartMin = -1
+        raw.forEachIndexed { i, r ->
+            if (r.startMin < prevStartMin) dayOffset += 24 * 60
+            prevStartMin = r.startMin
+            val start = midnight + (r.startMin + dayOffset) * 60_000L
+            val end = when {
+                !r.live && r.durMin > 0 -> start + r.durMin * 60_000L
+                // live tile: ends where the next programme starts, else now + remaining
+                i + 1 < raw.size -> midnight + (raw[i + 1].startMin + dayOffset +
+                    (if (raw[i + 1].startMin < r.startMin) 24 * 60 else 0)) * 60_000L
+                r.durMin > 0 -> System.currentTimeMillis() + r.durMin * 60_000L
+                else -> start + 60 * 60_000L
+            }
+            items.add(ScheduleItem(start, end, timeLabel(start, end), r.title, r.desc))
+        }
+        return items.sortedBy { it.startMillis }
+    }
+
     private fun fetchRadioFrance(stationEnum: String): List<ScheduleItem> {
         val cal = java.util.Calendar.getInstance().apply {
             set(java.util.Calendar.HOUR_OF_DAY, 0)
@@ -223,7 +313,7 @@ object ScheduleFetcher {
         return items.sortedBy { it.startMillis }
     }
 
-    private fun httpPostJson(url: String, json: String): String {
+    private fun httpPostJson(url: String, json: String, headers: Map<String, String> = emptyMap()): String {
         val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
         conn.connectTimeout = 10_000
         conn.readTimeout = 15_000
@@ -231,6 +321,7 @@ object ScheduleFetcher {
         conn.doOutput = true
         conn.setRequestProperty("Content-Type", "application/json")
         conn.setRequestProperty("User-Agent", "RadioApp/1.0")
+        headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
         try {
             conn.outputStream.use { it.write(json.toByteArray()) }
             if (conn.responseCode != 200) throw IllegalStateException("HTTP ${conn.responseCode} voor $url")
