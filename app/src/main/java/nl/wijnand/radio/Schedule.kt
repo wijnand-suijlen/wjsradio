@@ -1,9 +1,13 @@
 package nl.wijnand.radio
 
+import android.util.Xml
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import org.xmlpull.v1.XmlPullParser
 import java.text.SimpleDateFormat
+import java.time.Duration
+import java.time.OffsetDateTime
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -16,8 +20,9 @@ data class ScheduleItem(
     val subtitle: String,
 )
 
-// Today's programme guide. Only NPO and BBC expose clean keyless JSON APIs;
-// the other broadcasters would require scraping, so they are not supported.
+// Today's programme guide. NPO and BBC expose keyless JSON APIs, the German
+// broadcasters publish RadioDNS/SPI XML, Radio France needs an API key.
+// VRT/RTBF have no usable source (VRT's RadioDNS schedules are empty).
 object ScheduleFetcher {
 
     private val npoSites = mapOf(
@@ -34,6 +39,17 @@ object ScheduleFetcher {
         "bbc4" to "bbc_radio_fourfm",
     )
 
+    // RadioDNS/SPI programme files (worlddab spi XML), one per station per day.
+    // Endpoints verified 2026-08: WDR via the ARD server (fm bearer path),
+    // Deutschlandradio via its own server (dab bearer path). %s = yyyyMMdd.
+    private val spiUrls = mapOf(
+        "wdr2" to "https://dewdr.radiodns.ard.de/radiodns/spi/3.1/fm/de0/d392/10040/%s_PI.xml",
+        "wdr3" to "https://dewdr.radiodns.ard.de/radiodns/spi/3.1/fm/de0/d393/09510/%s_PI.xml",
+        "wdr5" to "https://dewdr.radiodns.ard.de/radiodns/spi/3.1/fm/de0/d395/08880/%s_PI.xml",
+        "dlf" to "https://rdns.deutschlandradio.de/radiodns/spi/3.1/dab/de0/10bc/d210/0/%s_PI.xml",
+        "dlfkultur" to "https://rdns.deutschlandradio.de/radiodns/spi/3.1/dab/de0/10bc/d220/0/%s_PI.xml",
+    )
+
     // Radio France needs a personal API key in local.properties (radiofrance.api.key=...);
     // without one these stations simply don't offer a schedule.
     private val radioFranceIds = mapOf(
@@ -47,7 +63,7 @@ object ScheduleFetcher {
     private val radioFranceKey: String get() = BuildConfig.RADIOFRANCE_API_KEY
 
     fun supports(stationId: String): Boolean =
-        stationId in npoSites || stationId in bbcIds ||
+        stationId in npoSites || stationId in bbcIds || stationId in spiUrls ||
             (stationId in radioFranceIds && radioFranceKey.isNotEmpty())
 
     // The CGU require a credit line when showing Open API data
@@ -56,6 +72,7 @@ object ScheduleFetcher {
     suspend fun fetch(station: Station): List<ScheduleItem> = withContext(Dispatchers.IO) {
         npoSites[station.id]?.let { return@withContext fetchNpo(it) }
         bbcIds[station.id]?.let { return@withContext fetchBbc(it) }
+        spiUrls[station.id]?.let { return@withContext fetchSpi(it) }
         radioFranceIds[station.id]?.let { return@withContext fetchRadioFrance(it) }
         emptyList()
     }
@@ -96,6 +113,65 @@ object ScheduleFetcher {
                 val secondary = titles.optString("secondary").takeIf { it.isNotEmpty() && it != "null" } ?: ""
                 items.add(ScheduleItem(start, end, timeLabel(start, end), titles.optString("primary"), secondary))
             }
+        }
+        return items.sortedBy { it.startMillis }
+    }
+
+    // Parses a worlddab SPI PI.xml: <programme> with mediumName (16-char cap),
+    // optional longName, <time time="ISO" duration="PT..M"/> and shortDescription.
+    private fun fetchSpi(urlTemplate: String): List<ScheduleItem> {
+        val day = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+        val xml = RssFetcher.httpGet(urlTemplate.format(day))
+
+        val parser = Xml.newPullParser()
+        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
+        parser.setInput(xml.reader())
+
+        val items = mutableListOf<ScheduleItem>()
+        var inProgramme = false
+        var mediumName = ""
+        var longName = ""
+        var description = ""
+        var start = -1L
+        var end = -1L
+
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            when (event) {
+                XmlPullParser.START_TAG -> when (parser.name) {
+                    "programme" -> {
+                        inProgramme = true
+                        mediumName = ""; longName = ""; description = ""; start = -1L; end = -1L
+                    }
+                    "mediumName" -> if (inProgramme && mediumName.isEmpty()) mediumName = parser.nextText().trim()
+                    "longName" -> if (inProgramme && longName.isEmpty()) longName = parser.nextText().trim()
+                    "time" -> if (inProgramme && start < 0) {
+                        try {
+                            start = OffsetDateTime.parse(parser.getAttributeValue(null, "time"))
+                                .toInstant().toEpochMilli()
+                            end = start + Duration.parse(parser.getAttributeValue(null, "duration")).toMillis()
+                        } catch (_: Exception) {
+                            start = -1L
+                        }
+                    }
+                    "shortDescription" -> if (inProgramme && description.isEmpty()) {
+                        description = parser.nextText().trim()
+                    }
+                }
+                XmlPullParser.END_TAG -> if (parser.name == "programme") {
+                    inProgramme = false
+                    if (start >= 0 && end > start) {
+                        items.add(
+                            ScheduleItem(
+                                start, end, timeLabel(start, end),
+                                longName.ifEmpty { mediumName },
+                                description.take(200)
+                            )
+                        )
+                    }
+                }
+            }
+            event = parser.next()
         }
         return items.sortedBy { it.startMillis }
     }
