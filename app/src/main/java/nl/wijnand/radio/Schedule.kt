@@ -125,11 +125,24 @@ object ScheduleFetcher {
     }
 
     // The /api/broadcasts feed only carries the current + upcoming programmes.
-    // The /gids page embeds the full day (00:00–00:00) in its Next.js __NEXT_DATA__,
+    // The guide page embeds the full day (00:00–00:00) in its Next.js __NEXT_DATA__,
     // as programmes with a "HH:MM - HH:MM" time range. NPO ignores date params, so
-    // this is today only.
+    // this is today only. The sites are migrating the page from /gids to
+    // /programmering one by one (Radio 2/3FM/5 moved aug 2026, Radio 1/Klassiek
+    // not yet) — try both paths and use whichever actually carries programmes.
     private fun fetchNpo(site: String): List<ScheduleItem> {
-        val html = RssFetcher.httpGet("https://$site/gids")
+        var lastError: Exception? = null
+        for (path in listOf("gids", "programmering")) {
+            try {
+                return parseNpo(RssFetcher.httpGet("https://$site/$path"))
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+        throw lastError ?: IllegalStateException("Gids-data niet gevonden")
+    }
+
+    private fun parseNpo(html: String): List<ScheduleItem> {
         val json = Regex(
             "id=\"__NEXT_DATA__\"[^>]*>(.*?)</script>",
             RegexOption.DOT_MATCHES_ALL
