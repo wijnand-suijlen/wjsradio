@@ -75,6 +75,7 @@ object ScheduleFetcher {
         "fmusique" to "FRANCEMUSIQUE",
         "finfo" to "FRANCEINFO",
         "fip" to "FIP",
+        "fbidf" to "FRANCEBLEU_PARIS",
     )
 
     private val radioFranceKey: String get() = BuildConfig.RADIOFRANCE_API_KEY
