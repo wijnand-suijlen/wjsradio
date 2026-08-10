@@ -15,7 +15,7 @@ Geen dependencies — alleen Python 3-standaardbibliotheek.
 ```bash
 sudo mkdir -p /opt/radiogids
 sudo curl -fsSL -o /opt/radiogids/radiogids.py \
-  https://raw.githubusercontent.com/<user>/<repo>/main/server/radiogids.py
+  https://raw.githubusercontent.com/wijnand-suijlen/wjsradio/main/server/radiogids.py
 
 # Secrets — NIET in git; token bijv. genereren met: openssl rand -hex 24
 sudo tee /etc/radiogids.env >/dev/null <<'EOF'
@@ -26,7 +26,7 @@ EOF
 sudo chmod 600 /etc/radiogids.env
 
 sudo curl -fsSL -o /etc/systemd/system/radiogids.service \
-  https://raw.githubusercontent.com/<user>/<repo>/main/server/radiogids.service
+  https://raw.githubusercontent.com/wijnand-suijlen/wjsradio/main/server/radiogids.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now radiogids
 ```
