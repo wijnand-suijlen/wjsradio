@@ -69,8 +69,9 @@ object ScheduleFetcher {
         "musiq3" to 7,
     )
 
-    // Radio France needs a personal API key in local.properties (radiofrance.api.key=...);
-    // without one these stations simply don't offer a schedule.
+    // Radio France needs a personal API key in local.properties (radiofrance.api.key=...)
+    // or a configured radiogids-proxy (radiogids.url/.token, see server/README.md);
+    // without either these stations simply don't offer a schedule.
     private val radioFranceIds = mapOf(
         "finter" to "FRANCEINTER",
         "fculture" to "FRANCECULTURE",
@@ -81,12 +82,14 @@ object ScheduleFetcher {
     )
 
     private val radioFranceKey: String get() = BuildConfig.RADIOFRANCE_API_KEY
+    private val proxyUrl: String get() = BuildConfig.RADIOGIDS_URL
+    private val proxyToken: String get() = BuildConfig.RADIOGIDS_TOKEN
 
     fun supports(stationId: String): Boolean =
         stationId in npoSites || stationId in bbcIds || stationId in spiUrls ||
             stationId in vrtSlugs || stationId in rtbfChannels ||
             stationId == "bnr" || stationId == "rtl" ||
-            (stationId in radioFranceIds && radioFranceKey.isNotEmpty())
+            (stationId in radioFranceIds && (radioFranceKey.isNotEmpty() || proxyUrl.isNotEmpty()))
 
     // The CGU require a credit line when showing Open API data
     fun isRadioFrance(stationId: String): Boolean = stationId in radioFranceIds
@@ -408,10 +411,20 @@ object ScheduleFetcher {
                 ... on TrackStep { id start end track { title albumTitle } }
             } }
         """.trimIndent()
-        val body = httpPostJson(
-            "https://openapi.radiofrance.fr/v1/graphql?x-token=$radioFranceKey",
-            JSONObject().put("query", query).toString()
-        )
+        val payload = JSONObject().put("query", query).toString()
+        // Via de eigen radiogids-proxy als die geconfigureerd is (de API-sleutel
+        // blijft dan server-side); rechtstreeks als fallback wanneer we zelf een
+        // sleutel hebben, zodat de gids blijft werken als de proxy plat ligt.
+        val directUrl = "https://openapi.radiofrance.fr/v1/graphql?x-token=$radioFranceKey"
+        val body = if (proxyUrl.isNotEmpty()) {
+            try {
+                httpPostJson(proxyUrl, payload, mapOf("Authorization" to "Bearer $proxyToken"))
+            } catch (e: Exception) {
+                if (radioFranceKey.isNotEmpty()) httpPostJson(directUrl, payload) else throw e
+            }
+        } else {
+            httpPostJson(directUrl, payload)
+        }
         val root = JSONObject(body)
         if (root.has("errors")) {
             throw IllegalStateException(root.getJSONArray("errors").optJSONObject(0)?.optString("message") ?: "API-fout")

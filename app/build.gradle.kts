@@ -27,6 +27,16 @@ android {
             "String", "RADIOFRANCE_API_KEY",
             "\"${localProperties.getProperty("radiofrance.api.key") ?: ""}\""
         )
+        // Eigen gids-proxy (server/radiogids.py); met deze twee gezet heeft de
+        // APK geen Radio France-sleutel nodig en is hij veilig te delen.
+        buildConfigField(
+            "String", "RADIOGIDS_URL",
+            "\"${localProperties.getProperty("radiogids.url") ?: ""}\""
+        )
+        buildConfigField(
+            "String", "RADIOGIDS_TOKEN",
+            "\"${localProperties.getProperty("radiogids.token") ?: ""}\""
+        )
     }
 
     buildTypes {

@@ -1,0 +1,19 @@
+[Unit]
+Description=Radiogids-proxy (Radio France Open API cache)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# /etc/radiogids.env bevat RADIOFRANCE_API_KEY en RADIOGIDS_TOKEN (chmod 600)
+EnvironmentFile=/etc/radiogids.env
+ExecStart=/usr/bin/python3 /opt/radiogids/radiogids.py
+Restart=on-failure
+RestartSec=5
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
