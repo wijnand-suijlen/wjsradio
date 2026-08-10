@@ -19,7 +19,9 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -37,6 +39,8 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Pause
@@ -460,14 +464,22 @@ private fun ScheduleScreen(
                     state.items.indexOfFirst { now >= it.startMillis && now < it.endMillis }
                 else -1
 
+                // The current programme starts expanded so its segments (Radio
+                // France chroniques) are right below the highlight.
+                var expandedKeys by remember(state) {
+                    mutableStateOf(setOfNotNull(state.items.getOrNull(currentIndex)?.startMillis))
+                }
+
                 LaunchedEffect(state) {
                     if (currentIndex > 0) listState.scrollToItem(currentIndex)
                     else listState.scrollToItem(0)
                 }
 
+                val anyChildren = state.items.any { it.children.isNotEmpty() }
                 LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     itemsIndexed(state.items) { index, item ->
                         val current = index == currentIndex
+                        val expanded = item.startMillis in expandedKeys
                         Row(
                             Modifier
                                 .fillMaxWidth()
@@ -515,6 +527,66 @@ private fun ScheduleScreen(
                                     .padding(horizontal = 12.dp)
                                     .size(18.dp)
                             )
+                            if (item.children.isNotEmpty()) {
+                                IconButton(onClick = {
+                                    expandedKeys = if (expanded) expandedKeys - item.startMillis
+                                    else expandedKeys + item.startMillis
+                                }) {
+                                    Icon(
+                                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = if (expanded) "Onderdelen verbergen" else "Onderdelen tonen",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            } else if (anyChildren) {
+                                Spacer(Modifier.width(48.dp))
+                            }
+                        }
+                        if (expanded) {
+                            item.children.forEach { child ->
+                                val childCurrent = dayOffset == 0 &&
+                                    now >= child.startMillis && now < child.endMillis
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { searchItem = child }
+                                        .padding(start = 32.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        child.timeLabel,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = if (childCurrent) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (childCurrent) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(end = 12.dp)
+                                    )
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            child.title,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (childCurrent) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (childCurrent) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        if (child.subtitle.isNotEmpty() && child.subtitle != child.title) {
+                                            Text(
+                                                child.subtitle,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    if (childCurrent) {
+                                        Text(
+                                            "NU",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
                         }
                         HorizontalDivider(Modifier.padding(horizontal = 16.dp))
                     }

@@ -18,6 +18,8 @@ data class ScheduleItem(
     val timeLabel: String,
     val title: String,
     val subtitle: String,
+    // Radio France nests a programme's segments (chroniques) under the programme
+    val children: List<ScheduleItem> = emptyList(),
 )
 
 // Today's programme guide. NPO and BBC expose keyless JSON APIs, the German
@@ -400,9 +402,10 @@ object ScheduleFetcher {
         val dayEnd = dayStartMillis(dayOffset + 1) / 1000
         val query = """
             { grid(start: $dayStart, end: $dayEnd, station: $stationEnum) {
-                ... on DiffusionStep { start end diffusion { title show { title } } }
-                ... on BlankStep { start end title }
-                ... on TrackStep { start end track { title albumTitle } }
+                ... on DiffusionStep { id start end diffusion { title show { title } }
+                    children { ... on DiffusionStep { id } ... on BlankStep { id } ... on TrackStep { id } } }
+                ... on BlankStep { id start end title }
+                ... on TrackStep { id start end track { title albumTitle } }
             } }
         """.trimIndent()
         val body = httpPostJson(
@@ -414,7 +417,11 @@ object ScheduleFetcher {
             throw IllegalStateException(root.getJSONArray("errors").optJSONObject(0)?.optString("message") ?: "API-fout")
         }
         val grid = root.getJSONObject("data").getJSONArray("grid")
-        val items = mutableListOf<ScheduleItem>()
+        // The grid lists a programme's segments (chroniques) both under the
+        // programme's `children` and again as top-level steps. Parse everything
+        // flat first, then fold the segments into their programme.
+        class Step(val id: String, val item: ScheduleItem, val childIds: List<String>)
+        val steps = mutableListOf<Step>()
         for (i in 0 until grid.length()) {
             val o = grid.optJSONObject(i) ?: continue
             val start = o.optLong("start", -1) * 1000
@@ -431,9 +438,35 @@ object ScheduleFetcher {
                 track != null -> track.optString("title") to track.optString("albumTitle")
                 else -> (o.optString("title").takeIf { it.isNotEmpty() && it != "null" } ?: "Programma") to ""
             }
-            items.add(ScheduleItem(start, end, timeLabel(start, end), title, subtitle))
+            val childIds = mutableListOf<String>()
+            o.optJSONArray("children")?.let { arr ->
+                for (j in 0 until arr.length()) {
+                    val id = arr.optJSONObject(j)?.optString("id").orEmpty()
+                    if (id.isNotEmpty()) childIds.add(id)
+                }
+            }
+            steps.add(Step(o.optString("id"), ScheduleItem(start, end, timeLabel(start, end), title, subtitle), childIds))
         }
-        return items.sortedBy { it.startMillis }
+        val childIdSet = steps.flatMapTo(mutableSetOf()) { it.childIds }
+        val byId = steps.filter { it.id.isNotEmpty() }.associateBy { it.id }
+        val top = steps.filterTo(mutableListOf()) { it.id !in childIdSet }
+        // Some segments aren't listed under children but still fall entirely
+        // inside a longer programme — treat those as segments of that programme.
+        val strays = top.filter { a ->
+            top.any { b ->
+                b !== a && b.item.startMillis <= a.item.startMillis &&
+                    a.item.endMillis <= b.item.endMillis &&
+                    (b.item.endMillis - b.item.startMillis) > (a.item.endMillis - a.item.startMillis)
+            }
+        }
+        top.removeAll(strays)
+        return top.map { step ->
+            val segments = (step.childIds.mapNotNull { byId[it]?.item } +
+                strays.map { it.item }.filter {
+                    step.item.startMillis <= it.startMillis && it.endMillis <= step.item.endMillis
+                }).distinct().sortedBy { it.startMillis }
+            step.item.copy(children = segments)
+        }.sortedBy { it.startMillis }
     }
 
     private fun httpPostJson(url: String, json: String, headers: Map<String, String> = emptyMap()): String {
