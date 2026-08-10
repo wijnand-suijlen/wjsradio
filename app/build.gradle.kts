@@ -20,8 +20,8 @@ android {
         applicationId = "nl.wijnand.radio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         buildConfigField(
             "String", "RADIOFRANCE_API_KEY",
@@ -59,6 +59,14 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    // Heldere APK-naam, bijv. wjsradio-v1.1-release.apk
+    applicationVariants.all {
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = "wjsradio-v${versionName}-${buildType.name}.apk"
+        }
     }
 }
 
